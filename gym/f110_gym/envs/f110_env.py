@@ -192,8 +192,34 @@ class F110Env(gym.Env):
         self.sim = Simulator(self.params, self.num_agents, self.seed, time_step=self.timestep, integrator=self.integrator, lidar_dist=self.lidar_dist)
         self.sim.set_map(self.map_path, self.map_ext)
 
+        # action space: [steering_angle, speed]
+        self.action_space = spaces.Box(
+            low=np.array([self.params['s_min'], self.params['v_min']]), 
+            high=np.array([self.params['s_max'], self.params['v_max']]),
+            dtype=np.float32
+        )
+        
+        # observation space: Dictionary containing various observation types
+        # Set a preliminary observation space that will be updated after first reset
+        self.observation_space = spaces.Dict({
+            'scans': spaces.Box(low=0.0, high=np.inf, shape=(1080,), dtype=np.float32),  # LiDAR scans
+            'poses_x': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'poses_y': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'poses_theta': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'linear_vels_x': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'linear_vels_y': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'ang_vels_z': spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'collisions': spaces.Box(low=0, high=1, shape=(self.num_agents,), dtype=np.float32),
+            'lap_times': spaces.Box(low=0.0, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'lap_counts': spaces.Box(low=0.0, high=np.inf, shape=(self.num_agents,), dtype=np.float32),
+            'ego_idx': spaces.Box(low=0, high=self.num_agents-1, shape=(), dtype=np.int32)
+        })
+
         # stateful observations for rendering
         self.render_obs = None
+        
+        # Backward compatibility flag for gym bridge
+        self._gym_bridge_compat = True
 
     def __del__(self):
         """
@@ -303,19 +329,18 @@ class F110Env(gym.Env):
 
         return obs, reward, done, info
 
-    def reset(self, poses):
+    def reset(self, poses=None):
         """
         Reset the gym environment by given poses
 
         Args:
-            poses (np.ndarray (num_agents, 3)): poses to reset agents to
+            poses (np.ndarray (num_agents, 3), optional): poses to reset agents to
 
         Returns:
             obs (dict): observation of the current step
-            reward (float, default=self.timestep): step reward, currently is physics timestep
-            done (bool): if the simulation is done
-            info (dict): auxillary information dictionary
+            info (dict): auxiliary information dictionary (new gym API)
         """
+        original_poses_arg = poses  # Store original argument
         # reset counters and data members
         self.current_time = 0.0
         self.collisions = np.zeros((self.num_agents, ))
@@ -323,6 +348,15 @@ class F110Env(gym.Env):
         self.near_start = True
         self.near_starts = np.array([True]*self.num_agents)
         self.toggle_list = np.zeros((self.num_agents,))
+
+        # Use default poses if none provided
+        if poses is None:
+            # Check if initial poses were set by gym bridge
+            if hasattr(self, '_initial_poses') and self._initial_poses is not None:
+                poses = self._initial_poses
+                self._initial_poses = None  # Clear after use
+            else:
+                poses = np.zeros((self.num_agents, 3))
 
         # states after reset
         self.start_xs = poses[:, 0]
@@ -346,7 +380,13 @@ class F110Env(gym.Env):
             'lap_counts': obs['lap_counts']
             }
         
-        return obs, reward, done, info
+        # Return format depends on whether poses were originally provided
+        # If poses were provided in the original call, return old format for backward compatibility
+        if original_poses_arg is not None and hasattr(self, '_gym_bridge_compat'):
+            return obs, reward, done, info
+        else:
+            # Return new gym API format
+            return obs, info
 
     def update_map(self, map_path, map_ext):
         """
